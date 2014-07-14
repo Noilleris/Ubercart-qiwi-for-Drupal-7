@@ -1,0 +1,561 @@
+<?php
+
+define("cqiwiPayActionUrl", "https://w.qiwi.com/order/external/create.action");
+define("cqiwiRateUrl"     , "http://wm.exchanger.ru/asp/XMLbestRates.asp");
+
+/********************************************************************
+ * Drupal Hooks
+ ********************************************************************/
+
+/**
+ * Implementation of hook_perm().
+ */
+function uc_qiwi_perm() {
+  return array('administer uc_qiwi');
+}
+
+/**
+ * Implementation of hook_menu()
+ */
+function uc_qiwi_menu() {
+  $items = array();
+
+  $items['uc_qiwi/done'] = array(
+    'title'            => 'Internal Data',
+    'page callback'    => 'uc_qiwi_done_payment',
+    'access arguments' => array('access content'),
+    'type'             => MENU_CALLBACK
+  );
+  $items['uc_qiwi/success'] = array(
+    'title'            => 'qiwi processing',
+    'page callback'    => 'uc_qiwi_payment_end',
+    'page arguments'   => array('success'),
+    'access arguments' => array('access content'),
+    'type'             => MENU_CALLBACK
+  );
+  $items['uc_qiwi/fail'] = array(
+    'title'            => 'qiwi processing',
+    'page callback'    => 'uc_qiwi_payment_end',
+    'page arguments'   => array('fail'),
+    'access arguments' => array('access content'),
+    'type'             => MENU_CALLBACK
+  );
+  return $items;
+}
+/**
+ *  способ оплаты в списке выбора
+*/
+function uc_qiwi_uc_payment_method()
+{
+    $path = base_path() . drupal_get_path('module', 'uc_qiwi');
+    $title = t('qiwi');
+    $title_long = $title . '<br /><img src="' . $path .
+        '/images/qiwi-logo-pic.png" style="position: relative; left: 2.5em;">';
+    $methods[] = array('id' => 'qiwi', 'name' => $title, 'review' => 'qiwi', 'title' => $title_long, 'desc' => t('Pay with qiwi'),
+        'callback' => 'uc_payment_method_qiwi', 'weight' => 4, 'checkout' => true, 'no_gateway' => true, );
+    return $methods;
+}
+
+/**
+ * Implementation of hook_form_alter().
+ */
+function uc_qiwi_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'uc_cart_checkout_review_form' && ($order_id = intval($_SESSION['cart_order'])) > 0) {
+    $order = uc_order_load($order_id);
+	if ($order->payment_method == 'qiwi') {
+      unset($form["actions"]['submit']);
+      $form['#prefix'] = '<table><tr><td>';
+      $form['#suffix'] = '</td><td>'. drupal_render(drupal_get_form('uc_qiwi_submit_form', $order)) .'</td></tr></table>';
+    }
+  }
+}
+
+/**
+ * Implementation of hook_cron()
+ */
+function uc_qiwi_cron() {
+  $data = _qiwi_unserialize_rates();
+  if ($data === FALSE) {
+    return;
+  }
+
+  $result = db_query('SELECT * FROM {uc_qiwi_purse} ORDER BY type');
+  while ($rr = db_fetch_object($result)){
+    $rates[$rr->type]=$rr->type.' - '.variable_get('uc_qiwi_type_wm','WMR');
+  }
+
+  if(is_array($rates)) {
+    foreach($data['row'] as $val) {
+      foreach($rates as $k => $wmrate) {
+        if($val['Direct'] == $wmrate) {
+          $pul = substr($val['BaseRate'], 0, 1);
+          if($pul == '-') {
+            $rate[$k] = 1 / substr($val['BaseRate'], 1);
+          }
+          else {
+            $rate[$k] = $val['BaseRate'];
+          }
+        }
+      }
+    }
+  }
+
+	if(is_array($rate)) {
+		foreach($rate as $type => $ra) {
+		  $ra = variable_get('uc_qiwi_rate_wm','1.00') / $ra;
+			$query = db_update('uc_qiwi_purse');
+			$query->fields(array(
+				'rate' => $ra
+			));
+			$query->condition('type', $type);
+			$num_updated = $query->execute();
+		  //db_query("UPDATE {uc_qiwi_purse} SET rate='%s' WHERE type = '%s'", $ra, $type);
+		}
+	}
+	$rate = variable_get('uc_qiwi_rate_wm', '1.00');
+	$type = variable_get('uc_qiwi_type_wm', 'WMR');
+	$query = null;
+	$query = db_update('uc_qiwi_purse');
+	$query->fields(array(
+		'rate' => $rate
+	));
+	$query->condition('type', $type);
+	$num_updated = $query->execute();
+	//db_query("UPDATE {uc_qiwi_purse} SET rate='%s' WHERE type = '%s'", $rate, $type);
+}
+
+
+/********************************************************************
+ * Functions callback
+ ********************************************************************/
+/**
+ * Callback for qiwi payment method settings.
+ */
+function uc_qiwi_done_payment() {
+	/*$home = $_SERVER['DOCUMENT_ROOT'];	
+	$output = '';
+	foreach($GLOBALS['_POST'] as $key => $val)	{
+		$output .= "$key=>$val;";
+	}
+	file_put_contents($home.'/upload_products/input.txt', $output);*/
+  drupal_add_http_header('Content-Type', 'text/html; charset=iso-8859-1');
+  $order_id           = $GLOBALS['_POST']['LMI_PAYMENT_NO'];
+  $purse              = $GLOBALS['_POST']['LMI_PAYEE_PURSE'];
+  $price              = $GLOBALS['_POST']['LMI_PAYMENT_AMOUNT'];
+  $LMI_MODE           = $GLOBALS['_POST']['LMI_MODE'];
+  $LMI_SYS_INVS_NO    = $GLOBALS['_POST']['LMI_SYS_INVS_NO'];
+  $LMI_SYS_TRANS_NO   = $GLOBALS['_POST']['LMI_SYS_TRANS_NO'];
+  $LMI_SYS_TRANS_DATE = $GLOBALS['_POST']['LMI_SYS_TRANS_DATE'];
+  $LMI_SECRET_KEY     = $GLOBALS['_POST']['LMI_SECRET_KEY'];
+  $LMI_PAYER_PURSE    = $GLOBALS['_POST']['LMI_PAYER_PURSE'];
+  $LMI_PAYER_WM       = $GLOBALS['_POST']['LMI_PAYER_WM'];
+  $prerequest         = $GLOBALS['_POST']['LMI_PREREQUEST'];
+  $hash               = $GLOBALS['_POST']['LMI_HASH'];
+
+	$query = db_select('uc_qiwi_purse', 'wr');
+	$query->fields('wr');
+	$query->condition('wr.purse', $purse, '=');
+	$result = $query->execute();
+	$data = $result->fetchObject();
+  //$data = db_fetch_object(db_query("SELECT * FROM {uc_qiwi_purse} WHERE purse = '%s'", $purse));
+
+  if (empty($LMI_SECRET_KEY)) {
+    // secret key is not send, but hash must be calculated with it
+    $LMI_SECRET_KEY = $data->secret_key;
+  }
+
+  $tohash = $purse . $price . $order_id . $LMI_MODE . $LMI_SYS_INVS_NO . $LMI_SYS_TRANS_NO . $LMI_SYS_TRANS_DATE . $LMI_SECRET_KEY . $LMI_PAYER_PURSE . $LMI_PAYER_WM;
+  $tocheck = strtoupper(md5($tohash));
+	$query = null;
+	$result = null;
+	$query = db_select('uc_qiwi_transaction', 'wt');
+	$query->fields('wt');
+	$query->condition('wt.txnid', $order_id, '=');
+	$result = $query->execute();
+	$data2 = $result->fetchObject();
+  //$data2 = db_fetch_object(db_query("SELECT * FROM {uc_qiwi_transaction} WHERE txnid = '%d'", $order_id));
+  $un = unserialize($data2->description);
+  $output = '';
+foreach($un as $key => $val)	{
+	$output .= "$key=>$val;";
+}
+  
+  $order = uc_order_load($order_id);
+  /*
+		статус ХЕШ!
+	*/
+  if ($order === FALSE /*|| uc_order_status_data($order->order_status, 'state') != 'in_checkout'*/) {
+    print t('An error has occurred during payment. Please contact us to ensure your order has submitted.');
+    uc_order_update_status($order_id, 'canceled');
+    exit();
+  }
+  if($prerequest==1) {
+    $res="YES";
+
+    if ($un[$purse] != $price) {
+      $res = t('This number does not match the original price');
+      uc_order_comment_save($order_id, 0, $res, 'admin');
+      uc_order_update_status($order_id, 'canceled');
+    }
+
+    if (empty($data)) {
+      $res = t('Your wallet number does not match the original');
+      uc_order_comment_save($order_id, 0, $res, 'admin');
+      uc_order_update_status($order_id, 'canceled');
+    }
+
+    if (!empty($hash)) {
+      if ($hash != $tocheck) {
+        $res = t('Security check failed');
+        uc_order_comment_save($order_id, 0, $res, 'admin');
+        uc_order_update_status($order_id, 'canceled');
+      }
+    }
+  }
+  else {
+    $isok = FALSE;
+	/*
+		ПОНЯТь ХЕШ!
+	*/
+	 if (!empty($data) && $un[$purse] == $price /*&& $hash == $tocheck*/) {
+      if (!empty($data->secret_key) ){
+        if ($data->secret_key == $LMI_SECRET_KEY) {
+          $isok = TRUE;
+        }
+      }
+      else {
+        $isok = TRUE;
+      }
+    }
+    if ($isok) {
+		$description = t('Payment from WM %WM and Wallet %purse', array('%WM' => $LMI_PAYER_WM, '%purse' => $LMI_PAYER_PURSE));
+		$query = null;
+		$query = db_update('uc_qiwi_transaction');
+		$query->fields(array(
+			'description' => $description
+		));
+		$query->condition('txnid', $order_id);
+		$num_updated = $query->execute();
+     // db_query("UPDATE {uc_qiwi_transaction} SET description = '%s' WHERE txnid = %d",$description, $order_id);
+      uc_payment_enter($order_id, 'qiwi', $price, $order->uid, NULL, $description);
+	  uc_order_comment_save($order_id, 0, t('A payment has been accepted.'), 'admin');
+      uc_cart_complete_sale($order);
+      
+    }
+    else {
+      uc_order_comment_save($order_id, 0, $res, 'admin');
+      uc_order_update_status($order_id, 'canceled');
+    }
+  }
+  echo $res;
+
+}
+
+function uc_qiwi_example($purse){
+	$query = db_select('uc_qiwi_purse', 'wr');
+	$query->fields('wr');
+	$query->condition('wr.purse', $purse, '=');
+	$result = $query->execute();
+	$pursed = $result->fetchObject();
+  //$pursed = db_fetch_object(db_query('SELECT * FROM {uc_qiwi_purse} WHERE purse = "%s"', $purse));
+  $output ='<table><tbody><tr><td nowrap="nowrap">'. t('Purse') .':</td><td class="header3" align="left"><b>';
+  $output .= $pursed->purse .'</b></td><td>&nbsp;</td><td align="left">&nbsp;</td></tr>';
+  $output .= '<tr><td nowrap="nowrap">'. t('Trade Name:') .'</td>';
+  $output .= '<td align="left"><input style="display: inline;" value="'. variable_get('site_name', 'Drupal') .'" size="50" id="m_name" name="m_name" type="text"></td>';
+  $output .= '<td align="center">&nbsp;-&nbsp;</td>';
+  $output .= '<td align="left"> '. t('is displayed on the web page during the payment').'</td></tr>';
+  $output .= '<tr><td nowrap="nowrap">Secret Key:</td>';
+  $output .= '<td align="left"><input style="display: inline;" value="'. $pursed->secret_key .'" id="secret_key" name="secret_key" size="50" type="text"></td>';
+  $output .= '<td align="center"><input checked="checked" id="send_secret_key" name="send_secret_key" type="checkbox"></td>';
+  $output .= '<td align="left">'. t('Send the Secret Key to the Result URL if the Result URL is secured') .'</td></tr>';
+  $output .= '<tr><td nowrap="nowrap">Result URL:</td><td align="left"><input style="display: inline;" value="';
+  $output .= url('uc_qiwi/done', array('absolute' => TRUE)) .'" id="result_url" name="result_url" size="50" maxlength="255" type="text"></td>';
+  $output .= '<td align="center"><input checked="checked" id="send_param_prerequest" name="send_param_prerequest" value="1" type="checkbox"></td>';
+  $output .= '<td align="left">'. t('Send parameters in the pre-request'). '</td></tr>';
+  $output .= '<tr><td nowrap="nowrap">Success URL:</td><td align="left"><input style="display: inline;" value="';
+  $output .= url('uc_qiwi/success', array('absolute' => TRUE)) .'" id="success_url" name="success_url" size="50" maxlength="255" type="text"></td>';
+  $output .= '<td align="center"><select name="success_method" id="success_method"><option value="2" selected="selected">LINK</option></select></td>';
+  $output .= '<td>'. t('method of requesting Success URL') .'</td></tr>';
+  $output .= '<tr><td nowrap="nowrap">Fail URL:</td><td align="left"><input style="display: inline;" value="';
+  $output .= url('uc_qiwi/fail', array('absolute' => TRUE)) .'" id="fail_url" name="fail_url" size="50" maxlength="255" type="text"></td>';
+  $output .= '<td align="center"><select name="fail_method" id="fail_method"><option value="2" selected="selected">LINK</option></select></td>';
+  $output .= '<td>'. t('method of requesting Fail URL') .'</td></tr>';
+  $output .= '</tbody></table>';
+  $output .= '<table><tbody><tr><td nowrap="nowrap">'. t('Allow overriding URL from Payment Request Form:') .'</td>';
+  $output .= '<td align="left"><input id="allow_url_from_form" name="allow_url_from_form" value="1" type="checkbox"></td></tr>';
+  $output .= '<tr><td nowrap="nowrap">'. t('Send an error notification to merchant\'s keeper:') .'</td>';
+  $output .= '<td align="left"><input checked="checked" id="send_error" name="send_error" value="1" type="checkbox"></td></tr>';
+  $output .= '<tr><td nowrap="nowrap">'. t('Signature algorithm:') .'</td>';
+  $output .= '<td align="left"><select name="auth_type" id="auth_type"><option value="1" selected="selected">MD5</option></select></td></tr>';
+  $output .= '</tbody></table></form>';
+  return ($output);
+}
+
+
+/********************************************************************
+ * other Functions
+ ********************************************************************/
+function uc_payment_method_qiwi($op, &$arg1) {
+    switch ($op) {
+        case 'cart-details':
+
+            $build['instructions'] = array(
+                '#markup' => t('Checks should be made out to:'),
+            );
+
+            if (!variable_get('uc_check_mailing_street1', FALSE)) {
+                $build['address'] = array(
+                    '#markup' => uc_address_format(
+                        uc_store_name(),
+                        NULL,
+                        variable_get('uc_store_company', ''),
+                        variable_get('uc_store_street1', ''),
+                        variable_get('uc_store_street2', ''),
+                        variable_get('uc_store_city', ''),
+                        variable_get('uc_store_zone', ''),
+                        variable_get('uc_store_postal_code', ''),
+                        variable_get('uc_store_country', 840)
+                    ),
+                    '#prefix' => '<p>',
+                    '#suffix' => '</p>',
+                );
+            } else {
+                $build['address'] = array(
+                    '#markup' => uc_address_format(
+                        variable_get('uc_check_mailing_name', ''),
+                        NULL,
+                        variable_get('uc_check_mailing_company', ''),
+                        variable_get('uc_check_mailing_street1', ''),
+                        variable_get('uc_check_mailing_street2', ''),
+                        variable_get('uc_check_mailing_city', ''),
+                        variable_get('uc_check_mailing_zone', ''),
+                        variable_get('uc_check_mailing_postal_code', ''),
+                        variable_get('uc_check_mailing_country', 840)
+                    ),
+                    '#prefix' => '<p>',
+                    '#suffix' => '</p>',
+                );
+            }
+
+            $build['policy'] = array(
+                '#markup' => '<p>' . variable_get('uc_check_policy', '') . '</p>',
+            );
+            return $build;
+
+        case 'settings':
+            $form['qiwi_store_id'] = array(
+                '#type' => 'textfield',
+                '#title' => t('Qiwi Store ID'),
+                '#default_value' => variable_get('qiwi_store_id', ''),
+                '#description' => t("Please enter Qiwi Store ID"),
+            );
+            $form['qiwi_app_id'] = array(
+                '#type' => 'textfield',
+                '#title' => t('Qiwi App ID'),
+                '#default_value' => variable_get('qiwi_app_id', ''),
+                '#description' => t("Please enter Qiwi App ID"),
+            );
+            $form['qiwi_app_pass'] = array(
+                '#type' => 'textfield',
+                '#title' => t('Qiwi App Pass'),
+                '#default_value' => variable_get('qiwi_app_pass', ''),
+                '#description' => t("Please enter Qiwi App Pass"),
+            );
+            $form['qiwi_pull_pass'] = array(
+                '#type' => 'textfield',
+                '#title' => t('Qiwi Pull Pass'),
+                '#default_value' => variable_get('qiwi_pull_pass', ''),
+                '#description' => t("Please enter Qiwi Rest Pass"),
+            );
+            return $form;
+        case 'cart-process':
+            return;
+    }
+}
+
+// Form to build the submission to merchant.qiwi.ru.
+function uc_qiwi_submit_form($form, &$form_state, $order) {
+
+	$sum = round($order->order_total, 4);
+	$description = serialize($sum);
+
+	$query_cnt = db_select('uc_qiwi_transaction', 'qt');
+	$query_cnt->fields('qt');
+	$query_cnt->condition('qt.txnid', $order->order_id, '=');
+	$result_cnt = $query_cnt->execute();
+	$cnt = $result_cnt->rowCount();
+
+	if ($cnt > 0) {
+		$query = db_update('uc_qiwi_transaction');
+		$query->fields(array('description' => $description));
+		$query->condition('txnid', $order->order_id);
+		$num_updated = $query->execute();
+	}
+	else {
+		db_insert('uc_qiwi_transaction')->fields(array('txnid' => $order->order_id,	'description' => $description))->execute();
+	}
+
+
+	$form['tnx_id'] = array(
+		'#type' => 'hidden',
+		'#value' => $order->order_id,
+	);
+
+	$form['from'] = array(
+		'#type' => 'hidden',
+		'#value' => variable_get('qiwi_store_id', ''),
+	);
+
+	$form['to'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Phone number'),
+        '#description' => t("+7XXXXXXXXXX"),
+	);
+
+	$form['summ'] = array(
+		'#type' => 'hidden',
+		'#default_value' => $sum,
+	);
+
+    $form['currency'] = array(
+		'#type' => 'hidden',
+		'#default_value' => 'RUB',
+	);
+
+
+    $form['successUrl'] = array(
+        '#type' => 'hidden',
+        '#default_value' => urlencode('http://go-gostore.com/uc_qiwi/success'),
+    );
+
+    $form['failUrl'] = array(
+        '#type' => 'hidden',
+        '#default_value' => urlencode('http://go-gostore.com/uc_qiwi/fail'),
+    );
+
+	$form['#action'] = cqiwiPayActionUrl;
+	$form['submit'] = array(
+		'#type' => 'submit',
+		'#value' => t('Place your order'),
+	);
+	return $form;
+}
+
+
+function uc_qiwi_get_rate($type){
+  $data = _qiwi_unserialize_rates();
+
+  $wmrate='WM'. $type .' - '. variable_get('uc_qiwi_type_wm', 'WMR');
+  if (($data !== FALSE) && (is_array($data))) {
+    foreach ($data['row'] as $val) {
+      if ($val['Direct'] == $wmrate) {
+        $pul=substr($val['BaseRate'],0,1);
+          if ($pul == '-') {
+            $rate = 1 / substr($val['BaseRate'], 1);
+          }
+          else {
+            $rate = $val['BaseRate'];
+          }
+      }
+    }
+  }
+  else {
+    $rate=1;
+  }
+  if('WM'. $type == variable_get('uc_qiwi_type_wm', 'WMR')) {
+    $rate = variable_get('uc_qiwi_rate_wm', '1.00');
+  }
+  else {
+    $rate = variable_get('uc_qiwi_rate_wm', '1.00') / $rate;
+  }
+  return $rate;
+}
+
+function uc_qiwi_payment_end($type) {
+  if ($type=='success') {
+    if(isset($_SESSION['cart_order'])){
+      //$_SESSION['do_complete'] = TRUE;
+	  $_SESSION['uc_checkout'][$_SESSION['cart_order']]['do_complete'] = true;
+      drupal_goto('cart/checkout/complete');
+    }
+  }
+  else {
+    unset($_SESSION['cart_order']);
+    drupal_set_message( t("Your payment has been declined."));
+    drupal_goto('cart');
+  }
+}
+
+/********************************************************************
+ * Hook Functions (Ubercart)
+ ********************************************************************/
+
+/**
+ * Implementation of hook_payment_method().
+ */
+function uc_qiwi_payment_method() {
+  $path = base_path() . drupal_get_path('module', 'uc_qiwi');
+  $title =  t('qiwi') . '<br /><img src="'. $path .'/images/qiwi-logo-pic.png" style="position: relative; left: 2.5em;">';
+
+  $methods[] = array(
+    'id' => 'qiwi',
+    'name' => t('qiwi'),
+    'title' => $title,
+    'desc' => t('Redirect to qiwi to pay by.'),
+    'callback' => 'uc_payment_method_qiwi',
+    'weight' => 3,
+    'checkout' => TRUE,
+    'no_gateway' => TRUE,
+  );
+
+  return $methods;
+}
+
+/**********************************************************************
+ * Module and helper functions
+ **********************************************************************/
+
+/**
+ * Parses qiwi rates table (instead of 5.x XML_Unserializer)
+ *
+ * @return array or FALSE
+ *   An array of qiwi rates or FALSE if given file is uncorrect or missed.
+ */
+ function _qiwi_unserialize_rates() {
+  $src = variable_get('uc_qiwi_rate_url', cqiwiRateUrl);
+  $reader = new XMLReader();
+  if (!$reader->open($src)) {
+    drupal_set_message(t('Unable to open') .' '. $src, 'error');
+    return FALSE;
+  }
+
+  $data = array();
+  while ($reader->read()) {
+    if (($reader->nodeType == XMLReader::ELEMENT) && ($reader->name == 'row')) {
+      $data['row'][] = array(
+        'Direct' => $reader->getAttribute('Direct'),
+        'BaseRate' => $reader->getAttribute('BaseRate'),
+      );
+    }
+  }
+  $reader->close();
+
+  if (!isset($data['row']) || empty($data['row']) ) {
+    drupal_set_message(t('Invalid rate url - empty or unknown data returned.'), 'error');
+    return FALSE;
+  }
+  else {
+    foreach ($data['row'] as $key => $val) {
+      if (empty($val['Direct']) || empty($val['BaseRate'])) {
+        unset($data['row'][$key]);
+      }
+    }
+    if (empty($data['row'])) {
+      drupal_set_message(t('Invalid rate url - unknown data returned.'), 'error');
+      return FALSE;
+    }
+    else {
+      return $data;
+    }
+  }
+}

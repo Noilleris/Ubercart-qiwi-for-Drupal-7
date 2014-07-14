@@ -1,0 +1,44 @@
+<?php
+
+
+/**
+ * Implementation of hook_schema().
+ */
+function uc_qiwi_schema() {
+    $schema['uc_qiwi_transaction'] = array(
+        'description' => t('Transaction table'),
+        'fields' => array(
+            'txnid' => array(
+                'description' => t('Transaction ID'),
+                'type' => 'int',
+                'unsigned' => TRUE,
+                'not null' => TRUE,
+                'default' => 0,
+            ),
+            'amount' => array(
+                'type' => 'numeric',
+                'precision' => 6,
+                'scale' => 2,
+                'not null' => TRUE,
+                'default' => 0.00,
+            ),
+            'description' => array(
+                'type' => 'text',
+                'not null' => FALSE,
+            ),
+        ),
+        'primary key' => array('txnid'),
+    );
+    return $schema;
+}
+
+function uc_qiwi_install() {
+    // Create tables.
+    drupal_install_schema('uc_qiwi');
+    drupal_set_message(t('Ubercart: qiwi tables have been created.'));
+}
+function uc_qiwi_uninstall() {
+  // Remove tables.
+    drupal_uninstall_schema('uc_qiwi');
+}
+
