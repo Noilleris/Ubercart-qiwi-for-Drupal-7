@@ -1,6 +1,6 @@
 <?php
 
-define("cqiwiPayActionUrl", "https://w.qiwi.com/order/external/create.action");
+define("cqiwiPayActionUrl", "/uc_qiwi/do_payment");
 define("cqiwiRateUrl"     , "http://wm.exchanger.ru/asp/XMLbestRates.asp");
 
 /********************************************************************
@@ -18,29 +18,35 @@ function uc_qiwi_perm() {
  * Implementation of hook_menu()
  */
 function uc_qiwi_menu() {
-  $items = array();
+    $items = array();
 
-  $items['uc_qiwi/done'] = array(
-    'title'            => 'Internal Data',
-    'page callback'    => 'uc_qiwi_done_payment',
-    'access arguments' => array('access content'),
-    'type'             => MENU_CALLBACK
-  );
-  $items['uc_qiwi/success'] = array(
-    'title'            => 'qiwi processing',
-    'page callback'    => 'uc_qiwi_payment_end',
-    'page arguments'   => array('success'),
-    'access arguments' => array('access content'),
-    'type'             => MENU_CALLBACK
-  );
-  $items['uc_qiwi/fail'] = array(
-    'title'            => 'qiwi processing',
-    'page callback'    => 'uc_qiwi_payment_end',
-    'page arguments'   => array('fail'),
-    'access arguments' => array('access content'),
-    'type'             => MENU_CALLBACK
-  );
-  return $items;
+    $items['uc_qiwi/done'] = array(
+        'title' => 'Internal Data',
+        'page callback' => 'uc_qiwi_done_payment',
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK
+    );
+    $items['uc_qiwi/success'] = array(
+        'title' => 'qiwi processing',
+        'page callback' => 'uc_qiwi_payment_end',
+        'page arguments' => array('success'),
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK
+    );
+    $items['uc_qiwi/fail'] = array(
+        'title' => 'qiwi processing',
+        'page callback' => 'uc_qiwi_payment_end',
+        'page arguments' => array('fail'),
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK
+    );
+    $items['uc_qiwi/do_payment'] = array(
+        'title' => 'qiwi processing',
+        'page callback' => 'uc_qiwi_do_payment',
+        'access arguments' => array('access content'),
+        'type' => MENU_CALLBACK
+    );
+    return $items;
 }
 /**
  *  способ оплаты в списке выбора
@@ -132,123 +138,56 @@ function uc_qiwi_cron() {
  * Callback for qiwi payment method settings.
  */
 function uc_qiwi_done_payment() {
-	/*$home = $_SERVER['DOCUMENT_ROOT'];	
-	$output = '';
-	foreach($GLOBALS['_POST'] as $key => $val)	{
-		$output .= "$key=>$val;";
-	}
-	file_put_contents($home.'/upload_products/input.txt', $output);*/
-  drupal_add_http_header('Content-Type', 'text/html; charset=iso-8859-1');
-  $order_id           = $GLOBALS['_POST']['LMI_PAYMENT_NO'];
-  $purse              = $GLOBALS['_POST']['LMI_PAYEE_PURSE'];
-  $price              = $GLOBALS['_POST']['LMI_PAYMENT_AMOUNT'];
-  $LMI_MODE           = $GLOBALS['_POST']['LMI_MODE'];
-  $LMI_SYS_INVS_NO    = $GLOBALS['_POST']['LMI_SYS_INVS_NO'];
-  $LMI_SYS_TRANS_NO   = $GLOBALS['_POST']['LMI_SYS_TRANS_NO'];
-  $LMI_SYS_TRANS_DATE = $GLOBALS['_POST']['LMI_SYS_TRANS_DATE'];
-  $LMI_SECRET_KEY     = $GLOBALS['_POST']['LMI_SECRET_KEY'];
-  $LMI_PAYER_PURSE    = $GLOBALS['_POST']['LMI_PAYER_PURSE'];
-  $LMI_PAYER_WM       = $GLOBALS['_POST']['LMI_PAYER_WM'];
-  $prerequest         = $GLOBALS['_POST']['LMI_PREREQUEST'];
-  $hash               = $GLOBALS['_POST']['LMI_HASH'];
-
-	$query = db_select('uc_qiwi_purse', 'wr');
-	$query->fields('wr');
-	$query->condition('wr.purse', $purse, '=');
-	$result = $query->execute();
-	$data = $result->fetchObject();
-  //$data = db_fetch_object(db_query("SELECT * FROM {uc_qiwi_purse} WHERE purse = '%s'", $purse));
-
-  if (empty($LMI_SECRET_KEY)) {
-    // secret key is not send, but hash must be calculated with it
-    $LMI_SECRET_KEY = $data->secret_key;
-  }
-
-  $tohash = $purse . $price . $order_id . $LMI_MODE . $LMI_SYS_INVS_NO . $LMI_SYS_TRANS_NO . $LMI_SYS_TRANS_DATE . $LMI_SECRET_KEY . $LMI_PAYER_PURSE . $LMI_PAYER_WM;
-  $tocheck = strtoupper(md5($tohash));
-	$query = null;
-	$result = null;
-	$query = db_select('uc_qiwi_transaction', 'wt');
-	$query->fields('wt');
-	$query->condition('wt.txnid', $order_id, '=');
-	$result = $query->execute();
-	$data2 = $result->fetchObject();
-  //$data2 = db_fetch_object(db_query("SELECT * FROM {uc_qiwi_transaction} WHERE txnid = '%d'", $order_id));
-  $un = unserialize($data2->description);
-  $output = '';
-foreach($un as $key => $val)	{
-	$output .= "$key=>$val;";
 }
-  
-  $order = uc_order_load($order_id);
-  /*
-		статус ХЕШ!
-	*/
-  if ($order === FALSE /*|| uc_order_status_data($order->order_status, 'state') != 'in_checkout'*/) {
-    print t('An error has occurred during payment. Please contact us to ensure your order has submitted.');
-    uc_order_update_status($order_id, 'canceled');
-    exit();
-  }
-  if($prerequest==1) {
-    $res="YES";
 
-    if ($un[$purse] != $price) {
-      $res = t('This number does not match the original price');
-      uc_order_comment_save($order_id, 0, $res, 'admin');
-      uc_order_update_status($order_id, 'canceled');
-    }
+function uc_qiwi_do_payment() {
 
-    if (empty($data)) {
-      $res = t('Your wallet number does not match the original');
-      uc_order_comment_save($order_id, 0, $res, 'admin');
-      uc_order_update_status($order_id, 'canceled');
-    }
 
-    if (!empty($hash)) {
-      if ($hash != $tocheck) {
-        $res = t('Security check failed');
-        uc_order_comment_save($order_id, 0, $res, 'admin');
-        uc_order_update_status($order_id, 'canceled');
-      }
-    }
-  }
-  else {
-    $isok = FALSE;
-	/*
-		ПОНЯТь ХЕШ!
-	*/
-	 if (!empty($data) && $un[$purse] == $price /*&& $hash == $tocheck*/) {
-      if (!empty($data->secret_key) ){
-        if ($data->secret_key == $LMI_SECRET_KEY) {
-          $isok = TRUE;
-        }
-      }
-      else {
-        $isok = TRUE;
-      }
-    }
-    if ($isok) {
-		$description = t('Payment from WM %WM and Wallet %purse', array('%WM' => $LMI_PAYER_WM, '%purse' => $LMI_PAYER_PURSE));
-		$query = null;
-		$query = db_update('uc_qiwi_transaction');
-		$query->fields(array(
-			'description' => $description
-		));
-		$query->condition('txnid', $order_id);
-		$num_updated = $query->execute();
-     // db_query("UPDATE {uc_qiwi_transaction} SET description = '%s' WHERE txnid = %d",$description, $order_id);
-      uc_payment_enter($order_id, 'qiwi', $price, $order->uid, NULL, $description);
-	  uc_order_comment_save($order_id, 0, t('A payment has been accepted.'), 'admin');
-      uc_cart_complete_sale($order);
-      
-    }
-    else {
-      uc_order_comment_save($order_id, 0, $res, 'admin');
-      uc_order_update_status($order_id, 'canceled');
-    }
-  }
-  echo $res;
 
+   //Идентификатор магазина из вкладки "Данные магазина" https://ishop.qiwi.com/options/merchants.action
+    $SHOP_ID = variable_get('qiwi_store_id', '');
+
+    //REST ID из вкладки "Данные магазина" https://ishop.qiwi.com/options/merchants.action
+    $REST_ID = variable_get('qiwi_app_id', '');
+
+    //REST пароль из вкладки "Данные магазина" https://ishop.qiwi.com/options/merchants.action
+    $PWD = variable_get('qiwi_app_pass', '');
+
+    //ID
+    $BILL_ID = $_POST['tnx_id'];
+
+    $PHONE = $_POST['to'];
+
+    $data = array(
+        "user" => "tel:+" . $PHONE,
+        "amount" => "1.00",
+        "ccy" => "RUB",
+        "comment" => "Все очень хорошо",
+        "lifetime" => "2015-01-30T15:35:00",
+        "pay_source" => "qw",
+        "prv_name" => "Хороший магазин"
+    );
+
+    $ch = curl_init('https://w.qiwi.com/api/v2/prv/' . $SHOP_ID . '/bills/' . $BILL_ID);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, FALSE);
+    curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($data));
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
+    curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    curl_setopt($ch, CURLOPT_USERPWD, $REST_ID . ":" . $PWD);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+        "Accept: application/json"
+    ));
+    $results = curl_exec($ch) or die(curl_error($ch));
+    echo $results;
+    echo curl_error($ch);
+    curl_close($ch);
+
+    //Необязательный редирект пользователя
+    $url = 'https://w.qiwi.com/order/external/main.action?shop='.$SHOP_ID.'&transaction='.$BILL_ID.'&successUrl='.urlencode('http://go-gostore.com/uc_qiwi/success').'&failUrl='.urlencode('http://go-gostore.com/uc_qiwi/fail').'&qiwi_phone='.$PHONE;
+    var_dump($url);
+    die();
 }
 
 function uc_qiwi_example($purse){
@@ -409,7 +348,7 @@ function uc_qiwi_submit_form($form, &$form_state, $order) {
 	$form['to'] = array(
         '#type' => 'textfield',
         '#title' => t('Phone number'),
-        '#description' => t("+7XXXXXXXXXX"),
+        '#description' => t("7XXXXXXXXXX"),
 	);
 
 	$form['summ'] = array(
